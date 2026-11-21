@@ -68,6 +68,10 @@ export interface ResolvedItemTimestamps {
   addedAt: string;
   updatedAt: string;
   personalRatingCleared: boolean;
+  /** Aşama 1 — durum alanının son değişim anı (alan bazlı birleştirme). */
+  statusChangedAt?: string;
+  /** Aşama 1 — puan alanının (ver/ değiştir/ temizle) son değişim anı. */
+  ratingChangedAt?: string;
 }
 
 export interface ResolveTimestampOptions {
@@ -172,6 +176,13 @@ export function resolveItemActionTimestamps(
     watchedAt = statusChanged || !existing?.watchedAt ? nowIso : existing.watchedAt;
   }
 
+  // Aşama 1 — alan bazlı değişim damgaları. Not düzenlemesi bu alanları
+  // değiştirmez; böylece senkronda puan silme / durum geri alma kaybolmaz.
+  const ratingChanged =
+    hasValidRating && (options.forceRatedAt || !existingHasValidRating || Number(existing?.personal_rating) !== personalRating);
+  const ratingChangedAt = ratingChanged || personalRatingCleared ? nowIso : existing?.rating_changed_at;
+  const statusChangedAt = statusChanged ? nowIso : existing?.status_changed_at;
+
   return {
     effectiveStatus,
     ratedAt,
@@ -180,6 +191,8 @@ export function resolveItemActionTimestamps(
     addedAt: existing?.addedAt || nowIso,
     updatedAt: nowIso,
     personalRatingCleared,
+    ...(statusChangedAt ? { statusChangedAt } : {}),
+    ...(ratingChangedAt ? { ratingChangedAt } : {}),
   };
 }
 
@@ -278,6 +291,8 @@ export function buildLibraryItem(input: BuildLibraryItemInput): SavedItem | null
     status: timestamps.effectiveStatus,
     personal_rating: input.rating || '',
     personal_rating_cleared: timestamps.personalRatingCleared,
+    ...(timestamps.statusChangedAt ? { status_changed_at: timestamps.statusChangedAt } : {}),
+    ...(timestamps.ratingChangedAt ? { rating_changed_at: timestamps.ratingChangedAt } : {}),
     ratedAt: timestamps.ratedAt,
     watchedAt: hasProgressInput ? timestamps.updatedAt : timestamps.watchedAt,
     completedAt: timestamps.completedAt,

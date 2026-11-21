@@ -1847,6 +1847,16 @@ export function App() {
     replaceCinemaKunye,
     handleSaveProfileName,
     showToast,
+    // Aşama 1 — yedek/geri yükleme tam belge kapsamı (B-05, B-06).
+    profiles,
+    deletedKeys,
+    setActiveProfileId,
+    setDeletedKeys,
+    setProfileName,
+    persistProfiles: persistProfilesBestEffort,
+    ...(getLastKnownServerRevision() !== null
+      ? { revision: getLastKnownServerRevision() as number }
+      : {}),
   });
 
   const handleEmptyAction = (act: string) => {

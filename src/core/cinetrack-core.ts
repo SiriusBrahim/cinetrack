@@ -108,6 +108,16 @@ export interface SavedItem {
   status: 'watching' | 'watchlist' | 'completed';
   personal_rating: number | '';
   personal_rating_cleared?: boolean;
+  /**
+   * Aşama 1 — Durum alanının en son kullanıcı tarafından değiştirildiği an.
+   * Alan bazlı birleştirmede `updatedAt`'ten (not düzenlemesi) ayrı tutulur.
+   */
+  status_changed_at?: string;
+  /**
+   * Aşama 1 — Puan alanının (puan verme, değiştirme veya temizleme) en son
+   * değiştirildiği an. `ratedAt` yalnızca dolu puanı temsil eder.
+   */
+  rating_changed_at?: string;
   ratedAt?: string;
   /** İzleme etkileşiminin (bölüm işaretleme dahil) son anı. `updatedAt` değildir. */
   watchedAt?: string;
@@ -449,6 +459,18 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     typeof item.watchedAt === 'string' && item.watchedAt.trim() && Number.isFinite(Date.parse(item.watchedAt))
       ? item.watchedAt.trim()
       : undefined;
+  const normalizedStatusChangedAt =
+    typeof item.status_changed_at === 'string' &&
+    item.status_changed_at.trim() &&
+    Number.isFinite(Date.parse(item.status_changed_at))
+      ? item.status_changed_at.trim()
+      : undefined;
+  const normalizedRatingChangedAt =
+    typeof item.rating_changed_at === 'string' &&
+    item.rating_changed_at.trim() &&
+    Number.isFinite(Date.parse(item.rating_changed_at))
+      ? item.rating_changed_at.trim()
+      : undefined;
   const normalizedCast = Array.isArray(item.cast)
     ? normalizeCinemaKunyeActorList(item.cast, 12)
     : [];
@@ -519,6 +541,8 @@ export function normalizeSavedItem(item: any): SavedItem | null {
     status: normalizedStatus,
     personal_rating: validRating || '',
     personal_rating_cleared: validRating ? false : item.personal_rating_cleared === true,
+    ...(normalizedStatusChangedAt ? { status_changed_at: normalizedStatusChangedAt } : {}),
+    ...(normalizedRatingChangedAt ? { rating_changed_at: normalizedRatingChangedAt } : {}),
     ...(normalizedRatedAt ? { ratedAt: normalizedRatedAt } : {}),
     ...(normalizedWatchedAt ? { watchedAt: normalizedWatchedAt } : {}),
     ...(normalizedCompletedAt ? { completedAt: normalizedCompletedAt } : {}),
@@ -682,97 +706,240 @@ export function dedupeItems(items: SavedItem[]): SavedItem[] {
   return [...unique.values()];
 }
 
-export function parseBackupText(
-  text: string,
-  options: { maxBytes?: number } = {}
-): {
+export const LATEST_BACKUP_VERSION = 4;
+export const SUPPORTED_BACKUP_VERSIONS: readonly number[] = [1, 2, 3, 4];
+
+export interface ParsedBackupProfile {
+  id: string;
+  name: string;
+  createdAt?: string;
+  preferences: any;
+  items: SavedItem[];
+  favoriteActors: FavoriteActorInfo[];
+  deleted_keys?: Record<string, string>;
+  isDemo: boolean;
+}
+
+export interface ParsedBackupDocument {
+  version: number;
+  schemaVersion: number;
+  /** Yedek `profiles[]` taşıyor mu (tam belge) yoksa tek profil mi? */
+  containsFullDocument: boolean;
+  activeProfileId: string;
+  profiles: ParsedBackupProfile[];
+  /** Aktif profilin (zenginleştirilmiş) kayıtları — geriye dönük alan. */
   items: SavedItem[];
   profileName: string;
   preferences: any;
   favoriteActors: FavoriteActorInfo[];
   cinemaKunye: CinemaKunyeDocument;
-  isDemo?: boolean;
-  schemaVersion: number;
-} {
+  isDemo: boolean;
+  revision?: number;
+  deletedKeys: Record<string, string>;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Aşama 1 — Yedek ayrıştırma (B-05, B-06, B-07).
+ *
+ * - v4 tam belge: bütün profiller, aktif profil, tombstone'lar ve revizyon.
+ * - v3 tam belge (`/api/data` çıktısı): artık bütün profiller okunur.
+ * - v1–v3 tek profil yedeği: eskisi gibi tek profil, geriye dönük uyumlu.
+ * - Gelecek sürüm (v5+) **açık hatayla** reddedilir; mevcut veri üzerine
+ *   yazılmaz.
+ * - Doğrulanamayan profil/kayıt sessizce düşürülmez; içe aktarma durdurulur.
+ */
+export function parseBackupText(
+  text: string,
+  options: { maxBytes?: number } = {}
+): ParsedBackupDocument {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_DATA_BYTES;
   if (typeof text !== 'string' || measureUtf8Bytes(text) > maxBytes) {
     throw new Error(
       `Gönderilen yedek dosyası izin verilen sınırı (${formatMaxDataLimitMb(maxBytes)}) aşıyor.`
     );
   }
-  const backup = JSON.parse(text);
-  if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
-    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
+
+  let backup: any;
+  try {
+    backup = JSON.parse(text);
+  } catch {
+    // `SyntaxError` adı korunur (çağıranlar bozuk JSON'ı ayırt edebilsin).
+    throw new SyntaxError('Yedek dosyası bozuk JSON içeriyor; içe aktarma durduruldu.');
   }
-  if (![1, 2, 3].includes(backup.version)) {
+  if (!isPlainRecord(backup)) {
     throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
   }
 
-  let rawItems: any[] = [];
-  let rawProfileName = '';
-  let rawPreferences: any = null;
-  let rawFavoriteActors: any[] = [];
-  let rawProfileKunye: any = null;
-  let isDemo = false;
+  // Sürüm alanı sayı olmalı; "4" gibi metin sürümler sessizce kabul edilmez.
+  const version = backup.version;
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
+    throw new Error('Bu dosya geçerli bir Cinethos yedeği değil (sürüm bilgisi okunamadı).');
+  }
+  if (version > LATEST_BACKUP_VERSION) {
+    throw new Error(
+      `Bu yedek daha yeni bir Cinethos sürümüyle (v${version}) oluşturulmuş. ` +
+        `Veri kaybını önlemek için uygulamayı güncelleyin; bu sürüm en fazla v${LATEST_BACKUP_VERSION} yedekleri içe aktarabilir.`
+    );
+  }
 
-  if (Array.isArray(backup.profiles) && backup.profiles.length > 0) {
-    const active =
-      backup.profiles.find((p: any) => p && p.id === backup.activeProfileId) || backup.profiles[0];
-    if (active) {
-      rawItems = Array.isArray(active.items) ? active.items : [];
-      rawProfileName = typeof active.name === 'string' ? active.name : '';
-      rawPreferences = active.preferences || null;
-      rawFavoriteActors = Array.isArray(active.favoriteActors) ? active.favoriteActors : [];
-      rawProfileKunye = active.cinemaKunye || active.sinemaKunyesi || null;
-      isDemo = active.isDemo === true;
-    }
+  const containsFullDocument = Array.isArray(backup.profiles) && backup.profiles.length > 0;
+  let rawProfiles: any[];
+  if (version >= 4 && !containsFullDocument) {
+    throw new Error(
+      "Bu dosya geçerli bir Cinethos yedeği değil (v4 yedeğinde 'profiles' listesi zorunludur)."
+    );
+  }
+  if (containsFullDocument) {
+    rawProfiles = backup.profiles;
   } else if (Array.isArray(backup.items)) {
-    rawItems = backup.items;
-    rawProfileName = typeof backup.profileName === 'string' ? backup.profileName : '';
-    rawPreferences = backup.preferences || null;
-    rawFavoriteActors = Array.isArray(backup.favoriteActors) ? backup.favoriteActors : [];
-    isDemo = backup.isDemo === true;
+    rawProfiles = [
+      {
+        id: normalizeProfileId(backup.profileId) ?? 'PROFILE-DEFAULT',
+        name: typeof backup.profileName === 'string' ? backup.profileName : 'Profilim',
+        createdAt: typeof backup.createdAt === 'string' ? backup.createdAt : '',
+        preferences: backup.preferences,
+        items: backup.items,
+        favoriteActors: backup.favoriteActors,
+        deleted_keys: backup.deleted_keys,
+        isDemo: backup.isDemo === true,
+        cinemaKunye: backup.cinemaKunye || backup.sinemaKunyesi || null,
+      },
+    ];
   } else {
     throw new Error('Bu dosya geçerli bir Cinethos yedeği değil.');
   }
 
-  if (
-    rawItems.some(
-      (item: any) =>
-        !item ||
-        typeof item !== 'object' ||
-        !validItemId(item.id) ||
-        !['movie', 'tv'].includes(item.media_type)
-    )
-  ) {
-    throw new Error('Yedekte geçersiz içerik kimliği veya türü var. Güvenlik nedeniyle içe aktarma durduruldu.');
+  if (rawProfiles.length > DEFAULT_MAX_PROFILES) {
+    throw new Error(
+      `Yedek ${rawProfiles.length} profil içeriyor; izin verilen en fazla ${DEFAULT_MAX_PROFILES} profil destekleniyor. ` +
+        `Veri kaybını önlemek için içe aktarma durduruldu.`
+    );
   }
+
+  const seenProfileIds = new Set<string>();
+  const normalizedProfiles: ParsedBackupProfile[] = [];
+  const kunyeParts: CinemaKunyeDocument[] = [
+    normalizeCinemaKunyeDocument(backup.cinemaKunye || backup.sinemaKunyesi || null),
+  ];
+
+  for (const [index, rawProfile] of rawProfiles.entries()) {
+    if (!isPlainRecord(rawProfile)) {
+      throw new Error(`Yedekteki ${index + 1}. profil geçersiz; içe aktarma durduruldu.`);
+    }
+    const canonicalId = normalizeProfileId(rawProfile.id);
+    if (!canonicalId) {
+      throw new Error(
+        `Yedekteki ${index + 1}. profilin kimliği geçersiz ('${String(rawProfile.id ?? '')}'). ` +
+          `Profil sessizce düşürülmedi; içe aktarma durduruldu.`
+      );
+    }
+    if (seenProfileIds.has(canonicalId)) {
+      throw new Error(
+        `Yedekte yinelenen profil kimliği var (${canonicalId}); hangi profilin geçerli olduğu belirsiz. İçe aktarma durduruldu.`
+      );
+    }
+    seenProfileIds.add(canonicalId);
+
+    const rawItems = rawProfile.items;
+    if (rawItems !== undefined && !Array.isArray(rawItems)) {
+      throw new Error(`Yedekteki '${canonicalId}' profilinin kayıtları dizi değil.`);
+    }
+    const itemsArray: any[] = Array.isArray(rawItems) ? rawItems : [];
+    if (itemsArray.length > DEFAULT_MAX_ITEMS_PER_PROFILE) {
+      throw new Error(
+        `Yedekteki '${canonicalId}' profili ${itemsArray.length} kayıt içeriyor; ` +
+          `izin verilen sınır ${DEFAULT_MAX_ITEMS_PER_PROFILE}. Veri kaybını önlemek için içe aktarma durduruldu.`
+      );
+    }
+    if (
+      itemsArray.some(
+        (item: any) =>
+          !isPlainRecord(item) || !validItemId(item.id) || !['movie', 'tv'].includes(item.media_type)
+      )
+    ) {
+      throw new Error(
+        `Yedekte geçersiz içerik kimliği veya türü var ('${canonicalId}'). Güvenlik nedeniyle içe aktarma durduruldu.`
+      );
+    }
+
+    const normalized = normalizeProfile(
+      { ...rawProfile, id: canonicalId },
+      { maxItems: DEFAULT_MAX_ITEMS_PER_PROFILE }
+    );
+    if (!normalized) {
+      throw new Error(`Yedekteki '${canonicalId}' profili normalize edilemedi; içe aktarma durduruldu.`);
+    }
+
+    kunyeParts.push(
+      normalizeCinemaKunyeDocument(rawProfile.cinemaKunye || rawProfile.sinemaKunyesi || null)
+    );
+
+    normalizedProfiles.push({
+      id: normalized.id,
+      name: normalized.name,
+      createdAt: normalized.createdAt,
+      preferences: normalized.preferences,
+      items: normalized.items,
+      favoriteActors: normalized.favoriteActors || [],
+      ...(normalized.deleted_keys && Object.keys(normalized.deleted_keys).length > 0
+        ? { deleted_keys: normalized.deleted_keys }
+        : {}),
+      isDemo: Boolean(normalized.isDemo),
+    });
+  }
+
+  if (normalizedProfiles.length === 0) {
+    throw new Error('Yedekte içe aktarılabilecek profil bulunamadı.');
+  }
+
+  const requestedActive = normalizeProfileId(backup.activeProfileId);
+  const activeProfile =
+    normalizedProfiles.find((profile) => profile.id === requestedActive) ?? normalizedProfiles[0];
 
   const rawSchemaVer = Number(backup.schemaVersion || backup.version);
   const schemaVersion =
     Number.isSafeInteger(rawSchemaVer) && rawSchemaVer > 0 ? rawSchemaVer : CURRENT_SCHEMA_VERSION;
-  const dedupedItems = dedupeItems(rawItems.map(normalizeSavedItem).filter(Boolean) as SavedItem[]);
 
-  const rawBackupKunye = backup.cinemaKunye || backup.sinemaKunyesi || null;
-  const combinedExplicitKunye = mergeCinemaKunyeDocumentsLossless(
-    normalizeCinemaKunyeDocument(rawBackupKunye),
-    normalizeCinemaKunyeDocument(rawProfileKunye)
+  let cinemaKunye = kunyeParts.reduce(
+    (acc, part) => mergeCinemaKunyeDocumentsLossless(acc, part),
+    normalizeCinemaKunyeDocument(null)
   );
-  const derivedKunye = extractCinemaKunyeFromItems(dedupedItems);
-  const cinemaKunye = mergeCinemaKunyeDocumentsLossless(combinedExplicitKunye, derivedKunye);
-  const enrichedItems = enrichSavedItemsFromCinemaKunye(dedupedItems, cinemaKunye);
+  const allItems = normalizedProfiles.flatMap((profile) => profile.items);
+  cinemaKunye = mergeCinemaKunyeDocumentsLossless(cinemaKunye, extractCinemaKunyeFromItems(allItems));
 
+  const enrichedProfiles = normalizedProfiles.map((profile) => ({
+    ...profile,
+    items: enrichSavedItemsFromCinemaKunye(profile.items, cinemaKunye),
+  }));
+  const enrichedActive =
+    enrichedProfiles.find((profile) => profile.id === activeProfile.id) ?? enrichedProfiles[0];
+  // Ham tercih nesnesi (geçersizse null) — çağıranlar normalize edilmiş kopyayı
+  // profil kaydından alır; bu alan geriye dönük bilgi amaçlıdır.
+  const rawActiveProfile =
+    rawProfiles[normalizedProfiles.findIndex((profile) => profile.id === enrichedActive.id)] ??
+    rawProfiles[0];
+  const rawPreferences =
+    isPlainRecord(rawActiveProfile?.preferences) ? rawActiveProfile.preferences : null;
+
+  const rawRevision = Number(backup.revision);
   return {
-    items: enrichedItems,
-    profileName: rawProfileName.trim().slice(0, 40),
-    preferences:
-      rawPreferences && typeof rawPreferences === 'object' && !Array.isArray(rawPreferences)
-        ? rawPreferences
-        : null,
-    favoriteActors: normalizeFavoriteActors(rawFavoriteActors),
-    cinemaKunye,
-    isDemo,
+    version,
     schemaVersion,
+    containsFullDocument,
+    activeProfileId: enrichedActive.id,
+    profiles: enrichedProfiles,
+    items: enrichedActive.items,
+    profileName: enrichedActive.name.trim().slice(0, 40),
+    preferences: rawPreferences,
+    favoriteActors: normalizeFavoriteActors(enrichedActive.favoriteActors),
+    cinemaKunye,
+    isDemo: Boolean(enrichedActive.isDemo),
+    ...(Number.isSafeInteger(rawRevision) && rawRevision >= 0 ? { revision: rawRevision } : {}),
+    deletedKeys: normalizeDeletedKeys(enrichedActive.deleted_keys),
   };
 }
 
@@ -891,6 +1058,61 @@ export function normalizeProfile(
     ...(Object.keys(normalizedTombstones).length > 0 ? { deleted_keys: normalizedTombstones } : {}),
     isDemo: raw.isDemo === true,
   };
+}
+
+/**
+ * Aşama 1 (B-04) — Sessiz kırpmayı önleyen limit denetimi.
+ *
+ * `normalizeDataDocument` limit aşımında profil/kayıt düşürür; bu fonksiyon
+ * düşürmeden **önce** ihlalleri listeler. Boş dizi = ihlal yok.
+ */
+export function collectDataLimitViolations(
+  raw: unknown,
+  options: { maxProfiles?: number; maxItems?: number } = {}
+): string[] {
+  const maxProfiles = options.maxProfiles ?? DEFAULT_MAX_PROFILES;
+  const maxItems = options.maxItems ?? DEFAULT_MAX_ITEMS_PER_PROFILE;
+  const violations: string[] = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return violations;
+  const obj = raw as Record<string, any>;
+
+  const candidates: any[] = Array.isArray(obj.profiles)
+    ? obj.profiles
+    : Array.isArray(obj.items)
+    ? [{ id: obj.profileId ?? 'PROFILE-DEFAULT', name: obj.profileName, items: obj.items }]
+    : [];
+
+  const validIds = new Set<string>();
+  for (const [index, candidate] of candidates.entries()) {
+    if (!isPlainRecord(candidate)) {
+      violations.push(`${index + 1}. profil nesne değil`);
+      continue;
+    }
+    const canonicalId = normalizeProfileId(candidate.id);
+    if (!canonicalId) {
+      violations.push(`geçersiz profil kimliği: '${String(candidate.id ?? '')}' (profil sessizce düşürülmez)`);
+      continue;
+    }
+    validIds.add(canonicalId);
+    const rawItems = candidate.items;
+    if (rawItems !== undefined && !Array.isArray(rawItems)) {
+      violations.push(`'${canonicalId}' profilinin kayıtları dizi değil`);
+      continue;
+    }
+    const itemCount = Array.isArray(rawItems) ? rawItems.length : 0;
+    if (itemCount > maxItems) {
+      violations.push(
+        `'${canonicalId}' profili ${itemCount} kayıt içeriyor (izin verilen en fazla ${maxItems})`
+      );
+    }
+  }
+
+  if (validIds.size > maxProfiles) {
+    violations.push(
+      `belge ${validIds.size} profil içeriyor (izin verilen en fazla ${maxProfiles})`
+    );
+  }
+  return violations;
 }
 
 export function normalizeDataDocument(

@@ -3,16 +3,17 @@
 > **Durum:** Uygulama planı / PR üzerinden kontrollü yürütme  
 > **Plan tarihi:** 21 Kasım 2026  
 > **Hedef dal:** `master`  
-> **Başlangıç commit'i:** `f87bd9da9775b46856de000d390883d83d402bf5`  
-> **Dayanak:** [Birleştirilmiş teknik denetim](../Cinethos_Master_Audit_Consolidated_2026-11-21.md)  
+> **Başlangıç commit'i:** `c58ec49aef9e309f5a6e673321db387eaa8a3a75` (Aşama 0'ın doğruladığı `master` ucu)
+> **Çalışma dalı / PR:** `remediation/full-project-remediation` — tek uzun ömürlü PR
+> **Dayanak:** [Birleştirilmiş teknik denetim](../Cinethos_Master_Audit_Consolidated_2026-11-21.md) · [Aşama 0 denetimi](audits/PHASE_00_BASELINE_AUDIT.md)  
 > **Kapsam:** Denetimdeki B-01…B-39 bulgularının tamamı ve uygulama sırasında doğrulanacak ek kalite kapıları.
 
-Bu belge, bulguları tek seferde büyük bir değişiklik olarak uygulamak yerine bağımsız, incelenebilir ve geri alınabilir teslimlere böler. Her uygulama aşaması ayrı bir feature/fix dalı ve ayrı PR olarak yürütülmelidir. Bir aşama PR'ı incelenip `master` dalına birleştirilmeden sonraki aşamanın kod değişikliklerine başlanmamalıdır.
+Bu belge, bulguları tek seferde büyük bir değişiklik olarak uygulamak yerine **aşama aşama, incelenebilir ve geri alınabilir commit'lere** böler. Yürürlükteki çalışma modeli **tek uzun ömürlü dal + tek PR**'dır: `remediation/full-project-remediation` dalı ve *chore: complete project remediation and quality improvements* PR'ı Aşama 0–10'un tamamını taşır. Her aşama aynı PR'a ayrı commit (veya küçük commit grubu) olarak eklenir; PR açıklamasındaki ilerleme tablosu aşama tamamlandıkça güncellenir. Yeni PR açılmaz, `master`'a doğrudan commit gönderilmez ve kullanıcı açıkça onaylamadan merge yapılmaz. (Bu model, planın ilk sürümündeki "her aşama ayrı PR" kuralının yerini alır — bkz. N-01.)
 
 ## 1. Çalışma ve birleştirme kuralları
 
-1. `master` doğrudan değiştirilmez. Her aşama güncel `master` üzerinden yeni dal açar.
-2. Her PR tek bir aşamanın kapsamını taşır. Birden fazla aşamayı tek PR'da birleştirmek, inceleme ve geri alma sınırlarını bozar.
+1. `master` doğrudan değiştirilmez. Tüm çalışma `remediation/full-project-remediation` dalında yürür ve `master` yalnızca kararlı başlangıç noktasıdır.
+2. Tek PR kullanılır; her aşama ayrı commit olarak eklenir. Bir aşamanın commit'leri, o aşamanın kabul kriterleri ve testleri tamamlanmadan bir sonraki aşamaya geçilmez. Aşama sınırları commit mesajlarında ve PR ilerleme tablosunda görünür kalır.
 3. PR açıklamasında ilgili bulgu ID'leri, değişen davranış, veri geçişi etkisi, test kanıtı, riskler ve geri alma yöntemi yazılır.
 4. PR, testler ve kabul kriterleri tamamlanmadan merge edilmez. Veri bütünlüğü aşamasında özellikle canlı kullanıcı verisi üzerinde test yapılmaz.
 5. Mevcut dosya/fonksiyon adları ve mimari önce koddan doğrulanır. Denetimde geçen veya örnek olarak önerilen adlar mevcut değilse yeni API/katman uydurulmaz; gerçek kod yapısına uyarlanır.
@@ -22,23 +23,30 @@ Bu belge, bulguları tek seferde büyük bir değişiklik olarak uygulamak yerin
 9. Bir PR yalnızca kendi kapsamındaki testleri değil, ilgili regresyon paketini de çalıştırır. Tam doğrulama aşamasında tüm kalite kapıları birlikte çalıştırılır.
 10. PR birleştirme stratejisi (squash/merge commit) proje geçmişiyle uyumlu seçilir; force-push ile `master` geçmişi değiştirilmez.
 
-### Önerilen dal adlandırması
+### Dal ve commit düzeni (yürürlükteki model)
 
-- `fix/phase-01-data-safety`
-- `fix/phase-02-sync-reliability`
-- `perf/phase-03-recommendations`
-- `fix/phase-04-ui-ux`
-- `refactor/phase-05-architecture`
-- `perf/phase-06-client-performance`
-- `security/phase-07-hardening`
-- `feat/phase-08-relationship-graph`
-- `fix/phase-09-backup-recovery-ux`
-- `test/phase-10-release-verification`
+Tek dal: `remediation/full-project-remediation`. Aşamalar commit ön ekiyle ayrılır:
+
+- `fix(phase-01): …` — veri güvenliği ve bütünlüğü
+- `fix(phase-02): …` — senkronizasyon güvenilirliği
+- `perf(phase-03): …` — öneri motoru
+- `fix(phase-04): …` — UI/UX ve erişilebilirlik
+- `refactor(phase-05): …` — mimari ve kod kalitesi
+- `perf(phase-06): …` — istemci performansı
+- `security(phase-07): …` — güvenlik ve gizlilik
+- `feat(phase-08): …` — Zevk Haritası
+- `fix(phase-09): …` — yedek/kurtarma deneyimi
+- `test(phase-10): …` — sürüm doğrulaması
 
 ## 2. Aşama 0 — Başlangıç doğrulaması ve güvenli çalışma zemini
 
-**Tür:** Salt okunur inceleme; uygulama kodu değiştirilmez.  
+**Durum:** ✅ **Tamamlandı — 21 Kasım 2026** (taban: `c58ec49`).  
+**Tür:** Salt okunur inceleme; uygulama kodu değiştirilmedi.  
 **Amaç:** Eski denetim ile güncel `master` arasındaki farkı ve uygulama öncesi gerçek durumu sabitlemek.
+
+**Çıktılar:** [PHASE_00_BASELINE_AUDIT.md](audits/PHASE_00_BASELINE_AUDIT.md) · [PHASE_00_FINDING_MATRIX.md](audits/PHASE_00_FINDING_MATRIX.md) · [PHASE_00_TEST_BASELINE.md](audits/PHASE_00_TEST_BASELINE.md) · [PHASE_00_ARCHITECTURE_MAP.md](audits/PHASE_00_ARCHITECTURE_MAP.md)
+
+**Sonuç özeti:** Denetimden bu yana yalnızca doküman değişti. 39 bulgunun 32'si CONFIRMED, 4'ü PARTIALLY_FIXED, 2'si FIXED (B-26, B-34), 1'i NEEDS_INVESTIGATION (B-27). 5 yeni bulgu (N-01…N-05) kaydedildi. `npm test` 608/608 geçti; ancak test koşusunun gerçek `data/` dizinini değiştirdiği hash karşılaştırmasıyla kanıtlandı (B-14).
 
 ### Yapılacak işler
 
@@ -66,6 +74,12 @@ Bu belge, bulguları tek seferde büyük bir değişiklik olarak uygulamak yerin
 **Çıktılar:** Güncel durum matrisi, test/performans başlangıç ölçümleri, aşama 1 kapsamı.
 
 ## 3. Aşama 1 — Veri güvenliği, test izolasyonu ve kayıpsız veri modeli
+
+> **Durum: TAMAMLANDI (21 Kasım 2026).** Tüm maddeler ve kabul kriterleri
+> karşılandı; kanıt ve sonuçlar §17'de, ayrıntılar
+> [PHASE_01_DATA_INTEGRITY.md](audits/PHASE_01_DATA_INTEGRITY.md) ve
+> [PHASE_01_DATA_INTEGRITY_TESTS.md](audits/PHASE_01_DATA_INTEGRITY_TESTS.md)
+> belgelerinde.
 
 **Öncelik:** P1 / Kritik  
 **Amaç:** Testlerin gerçek kullanıcı verisine dokunmasını önlemek; birleştirme, yedek ve geri yükleme akışlarında sessiz veri kaybını ortadan kaldırmak.
@@ -441,4 +455,85 @@ Her PR merge edildikten sonra sonraki dal yeni `master` HEAD'inden açılır. Ç
 
 ---
 
-**İlk uygulanacak iş:** Aşama 0'ın güncel master üzerinde yeniden doğrulanması. Aşama 0 raporu tamamlanıp onaylandıktan sonra Aşama 1 ayrı PR olarak açılmalıdır. Bu yol haritası bir uygulama taahhüdü değil; her aşama kendi kanıtı ve kabul kriteriyle tamamlandığında ilerleyen kontrollü bir iş planıdır.
+**İlk uygulanacak iş:** Aşama 1 — veri güvenliği, test izolasyonu ve kayıpsız veri modeli. Aşama 0 tamamlanmış ve doğrulanmıştır; Aşama 1 aynı dal ve aynı PR üzerinde commit olarak ilerler. Bu yol haritası bir uygulama taahhüdü değil; her aşama kendi kanıtı ve kabul kriteriyle tamamlandığında ilerleyen kontrollü bir iş planıdır.
+
+## 16. Aşama 0 sonuçları ve güncel bulgu durumu
+
+**Tarih:** 21 Kasım 2026 · **Taban:** `c58ec49` · **Ayrıntı:** [PHASE_00_BASELINE_AUDIT.md](audits/PHASE_00_BASELINE_AUDIT.md)
+
+### 16.1 Durum değişiklikleri
+
+| Bulgu | Önceki varsayım | Aşama 0 sonucu | Eşleşme değişikliği |
+|---|---|---|---|
+| B-01 | "`addedAt` önceliği" | PARTIALLY_FIXED — kod `ratedAt → completedAt → watchedAt → addedAt → updatedAt` sırasına geçmiş; kalan kusur **yalnızca `updatedAt`'in `addedAt` altında kalması** (puan silme / durum geri alma tek başına kaybediliyor) | Aşama 1 (değişmedi), kabul kriteri S1/S3 senaryolarıyla netleşti |
+| B-02 | Doğrudan test yok | PARTIALLY_FIXED — `reconcileUserDataDocumentsLossless` üzerinden dolaylı kapsama var | Aşama 1 (değişmedi) |
+| B-13 | Ölü sinyal | PARTIALLY_FIXED — `serverTaste` artık `genreScore` içine karışıyor; yalnızca `parts` kırılımı ağırlıksız görünüyor | Aşama 3 (değişmedi) |
+| B-22 | Sınırsız cache | PARTIALLY_FIXED — `invalidateProfile` var, boyut sınırı yok | Aşama 3 (değişmedi) |
+| B-26 | Retry düğmesi etkin | **FIXED** (durum koşuluna bağlanmış) | Aşama 4'ten çıkarıldı; yalnızca regresyon testi kalır |
+| B-27 | Görsel taşmalar | NEEDS_INVESTIGATION — bu aşamada görsel koşum yapılmadı | Aşama 4'te ölçümle yeniden açılacak |
+| B-34 | Ham anahtar | **FIXED** (`relationshipNodeKey` → `makeMediaKey`, tercihler kanonik) | Aşama 8'den çıkarıldı; regresyon testi kalır |
+
+### 16.2 Yeni bulguların aşama eşleşmesi
+
+| ID | P | Başlık | Aşama |
+|---|---|---|---|
+| N-01 | P2 | Plan ↔ tek-PR talimatı çelişkisi | 0 (bu güncellemeyle çözüldü) |
+| N-02 | P3 | `npm test` dosya listesi elle yazılmış | 5 |
+| N-03 | P3 | Kurulumda install-script'ler engelli | 10 |
+| N-04 | P3 | Test concurrency belirsiz (B-14 ile birleşik) | 1 |
+| N-05 | P4 | Kökte denetim belgesi birikmesi | 0/5 |
+
+### 16.3 Aşama 1 kapsamı (doğrulanmış)
+
+Yalnızca aşağıdaki işler; her biri ayrı commit + regresyon testi:
+
+1. **B-14 + N-04:** `tests/cinema-kunye-backup-sync.test.mjs:232,346,507` çağrılarını `createDataStorage({ dataDir: tmpDir })` yap; taste testlerinde eksik `dataDir` kalmadığını doğrula; `CINETRACK_DATA_DIR` test guard'ı; `data/` öncesi/sonrası hash kontrolü.
+2. **B-01 + B-02:** Eylem zamanı politikası (puan temizleme ve durum geri alma `updatedAt` ile kazanabilsin) + `mergeTwoSavedItemsLossless` için S1–S6 doğrudan testleri.
+3. **B-05 + B-06 + B-07:** Yedek şeması v4 (tombstone + tüm profiller + aktif profil + revizyon) veya tam belge içe aktarımını açık onayla sınırlama; v4/ileri sürüm için açıklayıcı hata.
+4. **B-04:** Limit aşımında sessiz kırpma yerine ret/uyarı; geçersiz profil kimliğini karantinaya al.
+5. **B-08:** `POST /api/data/restore` → `If-Match`/`expectedRevision` + 409; istemci revizyon gönderir.
+6. **B-09:** `sudden_item_drop` hesabına tombstone ve profil kapsamı ekle.
+7. **B-31:** Token dosyasını `.tmp` + `fsync` + `rename` + `0600` ile yaz.
+
+**Aşama 1'e girmeyenler:** B-03 (Aşama 3), B-10/B-30/B-38/B-39 (Aşama 2), UI ve mimari işleri (Aşama 4–8). Kapsam kayması olmayacak.
+
+### 16.4 Aşama 0'da kapatılan konular
+
+- Tek PR modeli plana işlendi (N-01).
+- `master`'a doğrudan commit gönderilmedi; tüm çalışma `remediation/full-project-remediation` dalında.
+- Uygulama kodu, veri şeması ve kullanıcı verisi değiştirilmedi; test koşusunun `data/` üzerindeki etkisi ölçüldü ve yedek alındı.
+
+## 17. Aşama 1 sonuçları
+
+**Tarih:** 21 Kasım 2026 · **Dal:** `remediation/full-project-remediation` · **PR:** #65
+**Taban:** `master` @ `c58ec49` (değişmedi) · **Ayrıntı:** [PHASE_01_DATA_INTEGRITY.md](audits/PHASE_01_DATA_INTEGRITY.md), [PHASE_01_DATA_INTEGRITY_TESTS.md](audits/PHASE_01_DATA_INTEGRITY_TESTS.md)
+
+### 17.1 Kapanan bulgular
+
+| Bulgu | Çözüm özeti | Commit |
+|---|---|---|
+| B-14, N-02, N-04 | Test veri guard'ı (`dataDir` zorunlu), glob tabanlı test keşfi, `--test-concurrency=1`, `data/` hash kapısı | `3b2df4e` |
+| B-01, B-02 | Alan bazlı `status_changed_at`/`rating_changed_at` + kayıpsız merge, boş puan "görüş yok" | `3945592` |
+| B-05, B-06, B-07 | Yedek v4 tam belge (tüm profiller, tombstone, revizyon); v5+ açık hata; sessiz düşürme yok | `be36d94` |
+| B-08 | Restore `If-Match`/`expectedRevision`, 409/412/428, güvenlik snapshot'ı, atomik yazım | `5e54f7b` |
+| B-09, B-04 | Tombstone/profil duyarlı kayıp koruması; limit aşımında sessiz kırpma yerine 409 | `30eb3cb` |
+| B-31 | Token dosyası: tmp + fsync + rename, `0600`, symlink reddi, sıralı yazma | `f4cac57` |
+| A–G | Uçtan uca entegrasyon testleri (çoklu cihaz, silme, yedek, restore çakışması) | `83ce55f` |
+
+### 17.2 Doğrulama
+
+- `npm run lint`: 0 hata / 0 uyarı
+- `npm run cycles`: döngü yok
+- `npm test`: **677/677** (69 yeni test)
+- `npm run test:taste`: **440/440**
+- `npm run build`: başarılı
+- `data/` hash'leri ve yedek sayısı Aşama 1 başından beri değişmedi
+- `npm run test:e2e`: **koşulamadı** (Playwright sistem bağımlılıkları eksik)
+
+### 17.3 Aşama 2'ye devredilenler
+
+- B-08 kabul kriterinin UI kısmı: restore 409 durumunun kullanıcıya gösterimi (Aşama 4).
+- Çok süreçli eşzamanlı yazma senaryosu (Aşama 2, B-38 ile birlikte).
+- Aşama 1 kapsamı dışında kalan bulgular plana uygun şekilde sonraki aşamalarda.
+
+**Aşama 1 burada durur; Aşama 2 başlatılmadı.**

@@ -11,13 +11,17 @@ import { fileURLToPath } from "node:url";
 
 import { migrateExistingData } from "../../src/core/taste/migration.ts";
 import {
+  resolveTastePaths,
   writeTasteEvents,
   readTasteEvents,
   writeTasteProfile,
   readTasteProfile,
   readTasteManifest,
-  TASTE_PATHS,
 } from "../../src/server/taste-store.ts";
+import { useIsolatedDataDir } from "../helpers/test-data.mjs";
+
+// Aşama 1: gerçek `data/` dizinine yazmayı engelle (B-14).
+useIsolatedDataDir("ct-taste-store-");
 import { aggregateProfiles } from "../../src/core/taste/profile-aggregator.ts";
 import { tasteCoverage, tasteUnknownRate } from "../../src/core/evaluation.ts";
 
@@ -161,7 +165,7 @@ describe("Taste Store Integration — Evaluation Metrikleri", () => {
 // === GitHub senkron kapsamı — manifest + profile dahil, index/events değil ===
 
 describe("Taste Store Integration — GitHub Senkron Kapsamı", () => {
-  it("TASTE_PATHS.manifest ve TASTE_PATHS.profile senkron kapsamında tanımlı", async () => {
+  it("resolveTastePaths().manifest ve resolveTastePaths().profile senkron kapsamında tanımlı", async () => {
     // sync-display.ts'deki SyncFileCategory'ye taste_manifest + taste_profile eklendi
     const { default: _syncDisplaySrc } = await import("../../src/core/sync-display.ts").catch(
       () => ({ default: null })
@@ -183,19 +187,19 @@ describe("Taste Store Integration — GitHub Senkron Kapsamı", () => {
 
   it("TASTE_PATHS dosya yolları doğru tanımlı", () => {
     assert.ok(
-      TASTE_PATHS.manifest.includes("cinetrack-taste-manifest.json"),
+      resolveTastePaths().manifest.includes("cinetrack-taste-manifest.json"),
       "manifest dosya yolu yanlış"
     );
     assert.ok(
-      TASTE_PATHS.profile.includes("cinetrack-taste-profile.json"),
+      resolveTastePaths().profile.includes("cinetrack-taste-profile.json"),
       "profile dosya yolu yanlış"
     );
     assert.ok(
-      TASTE_PATHS.index.includes("cinetrack-taste-index.json"),
+      resolveTastePaths().index.includes("cinetrack-taste-index.json"),
       "index dosya yolu yanlış"
     );
     assert.ok(
-      TASTE_PATHS.events.includes("cinetrack-taste-events.json"),
+      resolveTastePaths().events.includes("cinetrack-taste-events.json"),
       "events dosya yolu yanlış"
     );
   });

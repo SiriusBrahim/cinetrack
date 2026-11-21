@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  TASTE_PATHS,
+  resolveTastePaths,
   appendTasteEvent,
   appendTasteEventForProfile,
   appendTasteEventIdempotentForProfile,
@@ -28,6 +28,10 @@ import {
   writeTasteObjectionsForProfile,
   writeTasteProfileForProfile,
 } from "../../src/server/taste-store.ts";
+import { useIsolatedDataDir } from "../helpers/test-data.mjs";
+
+// Aşama 1: gerçek `data/` dizinine yazmayı engelle (B-14).
+useIsolatedDataDir("ct-taste-store-");
 
 const AS_OF = "2026-11-02T00:00:00.000Z";
 
@@ -219,7 +223,7 @@ test("legacy global API davranışı korunur (varsayılan imzalar)", async () =>
     await appendTasteEvent(marker);
     const after = await readTasteEvents();
     assert.ok(after.some((e) => e.eventId === markerEventId));
-    assert.ok(typeof TASTE_PATHS.events === "string" && TASTE_PATHS.events.endsWith("cinetrack-taste-events.json"));
+    assert.ok(typeof resolveTastePaths().events === "string" && resolveTastePaths().events.endsWith("cinetrack-taste-events.json"));
 
     const profile = await readTasteProfile();
     const index = await readTasteIndex();

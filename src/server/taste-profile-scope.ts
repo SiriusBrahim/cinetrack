@@ -18,6 +18,7 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeProfileId } from "../core/profile-id.ts";
+import { assertSafeDataDir, resolveDefaultDataDir } from "./test-data-guard.ts";
 import { writeJsonFileAtomicAsync } from "./atomic-json.ts";
 
 // === Sabitler ===
@@ -195,23 +196,23 @@ export function decodeProfileIdSafe(dir: unknown): string {
 // === 2. Yol çözümleme ===
 
 /** Taste kök dizini (`resolveTastePaths` ile birebir uyumlu). */
-export function resolveTasteRoot(dataDir: string = "data"): string {
+export function resolveTasteRoot(dataDir: string = resolveDefaultDataDir()): string {
   const base = dataDir && dataDir.length > 0 ? dataDir : "data";
   return base === "data" ? "data/taste" : path.join(base, "taste");
 }
 
 /** Profil partition kökü: `<taste-root>/profiles`. */
-export function resolveTasteProfilesRoot(dataDir: string = "data"): string {
+export function resolveTasteProfilesRoot(dataDir: string = resolveDefaultDataDir()): string {
   return path.join(resolveTasteRoot(dataDir), "profiles");
 }
 
 /** Profil id eşleme manifesti yolu. */
-export function resolveTasteProfileIdMapPath(dataDir: string = "data"): string {
+export function resolveTasteProfileIdMapPath(dataDir: string = resolveDefaultDataDir()): string {
   return path.join(resolveTasteProfilesRoot(dataDir), TASTE_PROFILE_ID_MAP_FILENAME);
 }
 
 /** Kapsam kilidi dizini (legacy `.taste.lock` bu dizinin dışında kalır). */
-export function resolveTasteLockDir(dataDir: string = "data"): string {
+export function resolveTasteLockDir(dataDir: string = resolveDefaultDataDir()): string {
   return path.join(resolveTasteRoot(dataDir), ".locks");
 }
 
@@ -251,7 +252,7 @@ function assertInsideTasteRoot(rootDir: string, targetPath: string): void {
  */
 export function resolveTastePathsForProfile(
   profileId: unknown,
-  dataDir: string = "data"
+  dataDir: string = resolveDefaultDataDir()
 ): TasteProfileScopePaths {
   const canonical = validateCanonicalProfileId(profileId);
   const dir = encodeProfileIdSafe(canonical);
@@ -474,7 +475,7 @@ export type TasteProfileIdMapReadResult =
  * hata üretir. Hiçbir onarım/yeniden eşleme/yazma yapmaz.
  */
 export async function readTasteProfileIdMap(
-  dataDir: string = "data"
+  dataDir: string = resolveDefaultDataDir()
 ): Promise<TasteProfileIdMapReadResult> {
   const filePath = resolveTasteProfileIdMapPath(dataDir);
   let text: string;
@@ -509,7 +510,7 @@ export interface TasteProfileIdMapLookupResult {
 /** Kanonik kimliğin manifest kaydını döner (salt okuma, yazma yok). */
 export async function readTasteProfileIdMapEntry(
   profileId: unknown,
-  dataDir: string = "data"
+  dataDir: string = resolveDefaultDataDir()
 ): Promise<TasteProfileIdMapLookupResult | null> {
   const canonical = validateCanonicalProfileId(profileId);
   const current = await readTasteProfileIdMap(dataDir);
@@ -543,7 +544,7 @@ async function writeTasteProfileIdMapUnlocked(
  */
 export async function writeTasteProfileIdMap(
   map: TasteProfileIdMap,
-  dataDir: string = "data"
+  dataDir: string = resolveDefaultDataDir()
 ): Promise<TasteProfileIdMap> {
   const validated = parseTasteProfileIdMap(map);
   return withScopedTasteLock(
@@ -715,7 +716,7 @@ export interface EnsureTasteProfileIdMapResult extends TasteProfileIdMapLookupRe
  */
 export async function ensureTasteProfileIdMapEntry(
   profileId: unknown,
-  dataDir: string = "data"
+  dataDir: string = resolveDefaultDataDir()
 ): Promise<EnsureTasteProfileIdMapResult> {
   const canonical = validateCanonicalProfileId(profileId);
   const currentDir = encodeProfileIdSafe(canonical);
@@ -864,7 +865,7 @@ function sanitizeScopeForFileName(scope: string): string {
  * `<taste-root>/.taste.lock` kullanır; diğer kapsamlar ayrı `.locks/` altındadır.
  */
 export function resolveTasteLockPath(
-  dataDir: string = "data",
+  dataDir: string = resolveDefaultDataDir(),
   scope: string = TASTE_LOCK_DATA_SCOPE
 ): string {
   if (scope === TASTE_LOCK_DATA_SCOPE) {
@@ -968,7 +969,7 @@ function parseTasteLockContent(text: string, lockPath: string): TasteLockRecord 
  * otomatik silme/onarım yok).
  */
 export async function readTasteLockState(
-  dataDir: string = "data",
+  dataDir: string = resolveDefaultDataDir(),
   scope: string = TASTE_LOCK_DATA_SCOPE
 ): Promise<TasteLockRecord | null> {
   const lockPath = resolveTasteLockPath(dataDir, scope);
@@ -1317,6 +1318,8 @@ export async function withScopedTasteLock<T>(
   request: TasteScopedLockRequest,
   task: () => Promise<T>
 ): Promise<T> {
+  // Aşama 1 — test ortamı gerçek `data/` ağacına yazamaz (B-14).
+  assertSafeDataDir(request.dataDir ?? "data", "taste-store");
   const key = `${path.resolve(request.dataDir ?? "data")}::${request.scope}`;
   return enqueueScopedLock(key, async () => {
     const handle = await acquireTasteLock(request);

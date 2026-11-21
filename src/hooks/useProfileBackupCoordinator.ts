@@ -1,25 +1,23 @@
 import { useCallback } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import {
-  dedupeItems,
+  CURRENT_SCHEMA_VERSION,
+  ENGINE_VERSION,
+  normalizeDeletedKeys,
   parseBackupText,
   type FavoriteActorInfo,
+  type ParsedBackupDocument,
   type Preferences,
   type Profile,
   type SavedItem,
 } from '../core/cinetrack-core.ts';
-import { mergeSavedItemListsLossless } from '../core/user-data-merge.ts';
+import { reconcileUserDataDocumentsLossless } from '../core/user-data-merge.ts';
 import {
   enrichSavedItemsFromCinemaKunye,
   extractCinemaKunyeFromItems,
   mergeCinemaKunyeDocumentsLossless,
 } from '../core/cinema-kunye.ts';
-import {
-  buildBackupFileName,
-  buildLocalBackupDocument,
-  resolveImportedFavoriteActors,
-  resolveImportedPreferences,
-} from '../app/profile-backup.ts';
+import { buildBackupFileName, buildLocalBackupDocument } from '../app/profile-backup.ts';
 import { favActorsStorageKey } from '../app/profile-storage.ts';
 
 export interface UseProfileBackupCoordinatorOptions {
@@ -32,8 +30,8 @@ export interface UseProfileBackupCoordinatorOptions {
   genresMap: Record<number, string>;
   cinemaKunye: any;
   isDemo: boolean;
-  pendingBackup: any | null;
-  setPendingBackup: Dispatch<SetStateAction<any | null>>;
+  pendingBackup: ParsedBackupDocument | null;
+  setPendingBackup: Dispatch<SetStateAction<ParsedBackupDocument | null>>;
   setSavedItems: Dispatch<SetStateAction<SavedItem[]>>;
   savedItemsRef: MutableRefObject<SavedItem[] | null>;
   lastForYouQueryKeyRef: MutableRefObject<string | null>;
@@ -47,16 +45,32 @@ export interface UseProfileBackupCoordinatorOptions {
   replaceCinemaKunye: (document: any) => any;
   handleSaveProfileName: (name: string) => void;
   showToast: (message: string) => void;
+  // Aşama 1 — tam belge (çoklu profil + tombstone) içe aktarma desteği.
+  profiles: Profile[];
+  deletedKeys: Record<string, string>;
+  setActiveProfileId: (id: string) => void;
+  setDeletedKeys: (keys: Record<string, string>) => void;
+  setProfileName: (name: string) => void;
+  persistProfiles?: (profiles: Profile[]) => void;
+  revision?: number;
 }
 
-/** Keeps local JSON backup import/export orchestration out of the App shell. */
+/**
+ * Aşama 1 (B-05, B-06, B-07) — yedek içe aktarma artık **tam belge** üzerinden
+ * yürür:
+ * - v4 ve v3 tam belgelerindeki bütün profiller, tombstone'lar ve aktif profil
+ *   korunur; `merge` modunda mevcut veriyle kayıpsız birleştirilir.
+ * - Tek profil yedekleri (v1–v3) geriye dönük uyumlu kalır: `overwrite`
+ *   yalnızca aktif profili değiştirir, diğer profillere dokunmaz.
+ */
 export function useProfileBackupCoordinator(options: UseProfileBackupCoordinatorOptions) {
   const {
-    activeProfileId, profileName, savedItems, preferences, favoriteActors, favoriteActorsRef,
+    activeProfileId, profileName, savedItems, preferences, favoriteActorsRef,
     genresMap, cinemaKunye, isDemo, pendingBackup, setPendingBackup, setSavedItems,
     savedItemsRef, lastForYouQueryKeyRef, setForYouItems, setPreferences, setFavoriteActors,
     setProfiles, setProfileOpen, confirmNextBulkSyncRef, mergeIncomingCinemaKunye,
-    replaceCinemaKunye, handleSaveProfileName, showToast,
+    replaceCinemaKunye, showToast, profiles, deletedKeys, setActiveProfileId, setDeletedKeys,
+    setProfileName, persistProfiles, revision,
   } = options;
 
   const handleExportBackup = useCallback(() => {
@@ -75,6 +89,9 @@ export function useProfileBackupCoordinator(options: UseProfileBackupCoordinator
       favoriteActors: favoriteActorsRef.current || [],
       isDemo: isDemo,
       nowIso,
+      profiles,
+      deletedKeys,
+      ...(typeof revision === 'number' ? { revision } : {}),
     });
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -92,6 +109,9 @@ export function useProfileBackupCoordinator(options: UseProfileBackupCoordinator
     preferences,
     favoriteActorsRef,
     isDemo,
+    profiles,
+    deletedKeys,
+    revision,
   ]);
 
   const handleImportBackupFile = useCallback(async (file: File) => {
@@ -107,61 +127,129 @@ export function useProfileBackupCoordinator(options: UseProfileBackupCoordinator
     if (!pendingBackup) return;
     if (mode === 'overwrite') confirmNextBulkSyncRef.current = true;
 
+    const nowIso = new Date().toISOString();
+    const backupProfiles: Profile[] = pendingBackup.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      createdAt: profile.createdAt || nowIso,
+      preferences: profile.preferences,
+      items: profile.items,
+      favoriteActors: profile.favoriteActors,
+      ...(profile.deleted_keys && Object.keys(profile.deleted_keys).length > 0
+        ? { deleted_keys: profile.deleted_keys }
+        : {}),
+      isDemo: profile.isDemo,
+    }));
+
+    const backupDoc = {
+      version: 3 as const,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      engineVersion: ENGINE_VERSION,
+      activeProfileId: pendingBackup.activeProfileId,
+      profiles: backupProfiles,
+      revision: pendingBackup.revision ?? 0,
+      updatedAt: nowIso,
+    };
+
+    let nextProfiles: Profile[];
+    let nextActiveId: string;
+
+    if (!pendingBackup.containsFullDocument && mode === 'overwrite') {
+      // Tek profil yedeği: yalnızca aktif profil değişir, diğer profiller korunur.
+      const incoming = backupProfiles[0];
+      const currentActive = profiles.find((profile) => profile.id === activeProfileId);
+      const targetProfile: Profile = {
+        ...(currentActive || {
+          id: activeProfileId,
+          name: 'Profilim',
+          createdAt: nowIso,
+          preferences: incoming.preferences,
+          items: [],
+        }),
+        ...incoming,
+        id: activeProfileId,
+        name: incoming.name || currentActive?.name || 'Profilim',
+      };
+      nextProfiles = [
+        ...profiles.filter((profile) => profile.id !== activeProfileId),
+        targetProfile,
+      ];
+      nextActiveId = activeProfileId;
+    } else if (mode === 'overwrite') {
+      nextProfiles = backupProfiles;
+      nextActiveId = pendingBackup.activeProfileId;
+    } else {
+      const currentDoc = {
+        version: 3 as const,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        engineVersion: ENGINE_VERSION,
+        activeProfileId,
+        profiles,
+        revision: revision ?? 0,
+        updatedAt: nowIso,
+      };
+      const { mergedDoc } = reconcileUserDataDocumentsLossless(backupDoc, currentDoc, {
+        authoritativeScalarSide: 'local',
+      });
+      nextProfiles = mergedDoc.profiles;
+      nextActiveId = mergedDoc.activeProfileId;
+    }
+
+    const active =
+      nextProfiles.find((profile) => profile.id === nextActiveId) ?? nextProfiles[0];
+    if (!active) {
+      showToast('Yedekte içe aktarılabilecek profil bulunamadı.');
+      return;
+    }
+
     const effectiveKunye = mode === 'merge'
       ? mergeIncomingCinemaKunye(pendingBackup.cinemaKunye)
       : replaceCinemaKunye(pendingBackup.cinemaKunye);
-    const rawImportedItems = mode === 'merge'
-      ? mergeSavedItemListsLossless(savedItems, pendingBackup.items, activeProfileId)
-      : dedupeItems(pendingBackup.items);
-    const importedItems = enrichSavedItemsFromCinemaKunye(rawImportedItems, effectiveKunye);
+    const importedItems = enrichSavedItemsFromCinemaKunye(active.items, effectiveKunye);
+    const activeDeleted = normalizeDeletedKeys(active.deleted_keys);
 
     savedItemsRef.current = importedItems;
     setSavedItems(importedItems);
     lastForYouQueryKeyRef.current = '';
     setForYouItems([]);
-    if (pendingBackup.profileName) handleSaveProfileName(pendingBackup.profileName);
-    if (pendingBackup.preferences) {
-      setPreferences((previous) =>
-        resolveImportedPreferences(previous, pendingBackup.preferences, mode) ?? previous
-      );
-    }
-    const importedActors = resolveImportedFavoriteActors(
-      favoriteActors,
-      pendingBackup.favoriteActors,
-      mode
-    );
-    setFavoriteActors(importedActors);
+    setProfiles(nextProfiles);
+    persistProfiles?.(nextProfiles);
+    setActiveProfileId(active.id);
+    setProfileName(active.name || 'Profilim');
+    setPreferences(active.preferences);
+    setDeletedKeys(activeDeleted);
+    setFavoriteActors(active.favoriteActors || []);
     try {
-      localStorage.setItem(favActorsStorageKey(activeProfileId), JSON.stringify(importedActors));
-    } catch {}
-
-    if (pendingBackup.isDemo !== undefined) {
-      setProfiles((previous) =>
-        previous.map((profile) => profile.id === activeProfileId
-          ? { ...profile, isDemo: pendingBackup.isDemo }
-          : profile)
+      localStorage.setItem(
+        favActorsStorageKey(active.id),
+        JSON.stringify(active.favoriteActors || [])
       );
-    }
+    } catch {}
 
     setPendingBackup(null);
     setProfileOpen(false);
-    showToast('Yedek başarıyla içe aktarıldı (' + importedItems.length + ' içerik)!');
+    showToast(
+      `Yedek başarıyla içe aktarıldı (${nextProfiles.length} profil, ${importedItems.length} içerik)!`
+    );
   }, [
     pendingBackup,
     confirmNextBulkSyncRef,
     mergeIncomingCinemaKunye,
     replaceCinemaKunye,
-    savedItems,
     activeProfileId,
+    profiles,
+    revision,
     savedItemsRef,
     setSavedItems,
     lastForYouQueryKeyRef,
     setForYouItems,
-    handleSaveProfileName,
-    setPreferences,
-    favoriteActors,
-    setFavoriteActors,
     setProfiles,
+    persistProfiles,
+    setActiveProfileId,
+    setProfileName,
+    setPreferences,
+    setDeletedKeys,
+    setFavoriteActors,
     setPendingBackup,
     setProfileOpen,
     showToast,
@@ -169,3 +257,4 @@ export function useProfileBackupCoordinator(options: UseProfileBackupCoordinator
 
   return { handleExportBackup, handleImportBackupFile, handleConfirmImport };
 }
+

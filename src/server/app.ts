@@ -1993,12 +1993,40 @@ export function createCineTrackApp(options: CineTrackAppOptions): {
       return;
     }
 
-    const restored = await storage.restoreBackupSerialized(backupId);
-    if (!restored) {
-      res.status(404).json({ status_message: 'Belirtilen yedek dosyası bulunamadı veya bozuk.', code: 'backup_not_found' });
+    // Aşama 1 (B-08) — revizyon korumalı restore: eski revizyona göre hazırlanmış
+    // bir yedek, eşzamanlı yeni veriyi sessizce ezemez.
+    const { expectedRevision, hasInvalidIfMatch, forceOverwrite } = parseWritePrecondition(req);
+    const bodyExpectedRevision =
+      req.body &&
+      typeof req.body === 'object' &&
+      typeof req.body.expectedRevision === 'number' &&
+      Number.isSafeInteger(req.body.expectedRevision) &&
+      req.body.expectedRevision >= 0
+        ? req.body.expectedRevision
+        : null;
+
+    const result = await storage.restoreBackupGuarded(backupId, {
+      expectedRevision: expectedRevision ?? bodyExpectedRevision,
+      hasInvalidIfMatch,
+      requirePrecondition: !forceOverwrite,
+      forceOverwrite,
+    });
+
+    if (!result.ok) {
+      if (result.currentRevision !== undefined) {
+        res.setHeader('ETag', `"rev-${result.currentRevision}"`);
+      }
+      res.status(result.status).json({
+        ok: false,
+        status_message: result.message,
+        code: result.code,
+        currentRevision: result.currentRevision,
+        expectedRevision: result.expectedRevision,
+      });
       return;
     }
 
+    const restored = result.document;
     const rev = restored.revision ?? 1;
     res.setHeader('ETag', `"rev-${rev}"`);
     res.json({

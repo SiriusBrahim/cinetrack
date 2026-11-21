@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import {
-  TASTE_PATHS,
+  resolveTastePaths,
   appendTasteEvent,
   readTasteEvents,
   writeTasteProfile,
@@ -22,6 +22,10 @@ import {
   readTasteManifest,
   writeTasteEvents,
 } from "../../src/server/taste-store.ts";
+import { useIsolatedDataDir } from "../helpers/test-data.mjs";
+
+// Aşama 1: gerçek `data/` dizinine yazmayı engelle (B-14).
+useIsolatedDataDir("ct-taste-store-");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const _TEST_DIR = join(tmpdir(), `ct-taste-store-test-${Date.now()}`);
@@ -131,7 +135,7 @@ describe("Taste Store — writeTasteProfile / readTasteProfile", () => {
 
   it("Profil dosyası atomik yazıldıktan sonra .tmp kalmamalı", async () => {
     await writeTasteProfile(makeProfile());
-    const tmpExists = existsSync(`${TASTE_PATHS.profile}.tmp`);
+    const tmpExists = existsSync(`${resolveTastePaths().profile}.tmp`);
     assert.strictEqual(tmpExists, false, ".tmp dosyası kaldı!");
   });
 });
@@ -186,7 +190,7 @@ describe("Taste Store — Atomik yazım", () => {
     await writeTasteProfile(makeProfile());
 
     // Dosya var mı?
-    assert.ok(existsSync(TASTE_PATHS.profile), "Profil dosyası yok");
+    assert.ok(existsSync(resolveTastePaths().profile), "Profil dosyası yok");
 
     // Okunabilir mi?
     const read = await readTasteProfile();
@@ -195,7 +199,7 @@ describe("Taste Store — Atomik yazım", () => {
 
   it("Bozuk events dosyasında readTasteEvents boş dizi döndürmeli", async () => {
     // Bilerek bozuk içerik yaz (doğrudan, atomik olmadan)
-    writeFileSync(TASTE_PATHS.events, "{ bozuk json }", "utf8");
+    writeFileSync(resolveTastePaths().events, "{ bozuk json }", "utf8");
 
     const events = await readTasteEvents();
     assert.ok(Array.isArray(events), "Dizi dönmeli");

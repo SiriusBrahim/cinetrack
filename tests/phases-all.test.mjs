@@ -541,6 +541,8 @@ test('Faz 4 & 5: HTTP 409 çakışma, ani veri düşüşü koruması, 413 boyut 
           headers: {
             'Content-Type': 'application/json',
             'X-CineTrack-Token': 'gizli-test-token',
+            // Aşama 1 (B-08): restore artık revizyon ön koşulu ister.
+            'If-Match': '"rev-3"',
           },
           body: JSON.stringify({ backupId: snapshotWith8.id }),
         });

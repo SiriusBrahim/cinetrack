@@ -4,7 +4,8 @@
 // Böylece .env'deki gho_ token'ının (~8 saatlik) süresi dolsa bile senkron çalışmaya
 // devam eder. Kullanıcının kalıcı token'ı (ghp_ / github_pat_) varsa ona dokunulmaz.
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { writeFileAtomicSecure } from './atomic-env-file.ts';
 
 export function isDurableGitHubToken(token: string): boolean {
   const t = (token || '').trim();
@@ -119,6 +120,12 @@ export async function refreshEnvGitHubPat(options: {
     return line;
   });
   if (!replaced) next.push(`CINETRACK_GITHUB_PAT=${fresh}`);
-  writeFileSync(envFilePath, next.join(newline), 'utf8');
+  // Aşama 1 (B-31): atomik + güvenli (0o600) yazım. Hata olursa eski token
+  // dosyada kalır; token hiçbir zaman loglanmaz.
+  try {
+    await writeFileAtomicSecure(envFilePath, next.join(newline));
+  } catch {
+    return null;
+  }
   return fresh;
 }

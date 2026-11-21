@@ -29,6 +29,9 @@ jobs:
       - name: Security Audit (Production Dependencies)
         run: npm audit --omit=dev --audit-level=high
 
+      - name: Snapshot real data dir (test isolation gate)
+        run: node scripts/check-data-integrity.mjs snapshot /tmp/cinetrack-data-manifest-before.json ./data
+
       - name: Lint & Typecheck
         run: npm run lint
 
@@ -37,6 +40,9 @@ jobs:
 
       - name: Taste Engine Tests
         run: npm run test:taste
+
+      - name: Verify real data dir unchanged (test isolation gate)
+        run: node scripts/check-data-integrity.mjs verify /tmp/cinetrack-data-manifest-before.json ./data
 
       - name: Production Build
         run: npm run build

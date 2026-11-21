@@ -277,7 +277,7 @@ describe("parseBackupText", () => {
     assert.equal(parseBackupText(validBackup({ preferences: ["hacked"] })).preferences, null);
     assert.equal(parseBackupText(validBackup({ preferences: "hacked" })).preferences, null);
     assert.equal(parseBackupText(validBackup({ preferences: null })).preferences, null);
-    assert.equal(parseBackupText(validBackup({ profileName: 42 })).profileName, "");
+    assert.equal(parseBackupText(validBackup({ profileName: 42 })).profileName, "Profilim");
     assert.equal(parseBackupText(validBackup({ profileName: "x".repeat(100) })).profileName.length, 40);
   });
 

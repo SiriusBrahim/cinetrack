@@ -103,7 +103,10 @@ test('Faz 3 · 14 — Profil yedeği tek kaynaktan üretilir', () => {
     isDemo: false,
     nowIso: '2026-03-04T10:00:00.000Z',
   });
-  assert.equal(backup.version, 3);
+  // Aşama 1 (B-05/B-06): yerel yedek artık v4 tam belge.
+  assert.equal(backup.version, 4);
+  assert.equal(backup.profiles.length, 1);
+  assert.equal(backup.activeProfileId, 'PROFILE-DEFAULT');
   assert.equal(backup.profileId, 'PROFILE-DEFAULT');
   assert.equal(backup.items.length, 1);
   assert.deepEqual(backup.preferences.disliked, ['movie:9']);

@@ -25,7 +25,6 @@ import {
 } from '../src/server/persistent-store.ts';
 import { createDataStorage } from '../src/server/storage.ts';
 import { createCineTrackApp } from '../src/server/app.ts';
-import { resolveConfig } from '../src/server/config.ts';
 import { executeProfileBackupExport } from '../src/server/excel-profile-backup.ts';
 
 const TEST_OWNER = 'kunye-owner';
@@ -227,15 +226,8 @@ test('2. Ayrı sinema-kunyesi.json dosyası, /api/cinema-kunye uç noktaları ve
   const tmpDir = createTempDir();
   try {
     const dataDir = path.join(tmpDir, 'data');
-    const dataFile = path.join(dataDir, 'cinetrack-data.json');
     const store = new PersistentDataStore({ dataDir });
-    const storage = createDataStorage(dataFile, { persistentStore: store });
-    const config = resolveConfig({
-      PORT: '0',
-      HOST: '127.0.0.1',
-      DATA_FILE: dataFile,
-    });
-    const appBundle = createCineTrackApp({ config, storage, persistentStore: store });
+    const appBundle = createCineTrackApp({ dataDir, persistentStore: store });
     const server = await new Promise((resolve) => {
       const s = appBundle.app.listen(0, '127.0.0.1', () => resolve(s));
     });
@@ -341,9 +333,8 @@ test('3. Profil JSON ve CSV tam yedeklemesi (contentId ile) ve geri yüklemede �
   const tmpDir = createTempDir();
   try {
     const dataDir = path.join(tmpDir, 'data');
-    const dataFile = path.join(dataDir, 'cinetrack-data.json');
     const store = new PersistentDataStore({ dataDir });
-    const storage = createDataStorage(dataFile, { persistentStore: store });
+    const storage = createDataStorage({ dataDir });
 
     const watchedMovie = {
       id: 157336,
@@ -495,7 +486,6 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
 
   try {
     const dataDir = path.join(tmpDir, 'data');
-    const dataFile = path.join(dataDir, 'cinetrack-data.json');
     const store = new PersistentDataStore({
       dataDir,
       githubToken: TEST_TOKEN,
@@ -504,7 +494,7 @@ test('4. GitHub çift yönlü senkronizasyonda data/sinema-kunyesi.json kayıps�
       githubBranch: TEST_BRANCH,
       isPublicRepo: false,
     });
-    const storage = createDataStorage(dataFile, { persistentStore: store });
+    const storage = createDataStorage({ dataDir });
     store.attachDataStorage(storage);
 
     const localKunye = extractCinemaKunyeFromItems(

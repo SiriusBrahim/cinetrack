@@ -74,6 +74,60 @@ export function getSavedItemEffectiveTimestampMs(item: SavedItem): number {
   return resolveItemLastKnownTimestampMs(item);
 }
 
+/**
+ * Aşama 1 — Alan bazlı birleştirme zamanı.
+ *
+ * Her alan kendi değişiklik zamanıyla yarışır; bir kaydın bütün alanlarını tek
+ * bir tarih (`ratedAt`/`updatedAt`) üzerinden birleştirmek puan silmeyi veya
+ * durum geri almayı kaybettiriyordu (B-01).
+ *
+ * Öncelik (puan): `rating_changed_at` → temizleme işaretçisi varsa `updatedAt`
+ *   (eski kayıtlarda tek sinyal) → `ratedAt` → `updatedAt`.
+ * Öncelik (durum): `status_changed_at` → `updatedAt` (eski kayıtlarda tek sinyal)
+ *   → `completedAt` → `watchedAt` → `addedAt`.
+ *
+ * `status_changed_at`/`rating_changed_at` yazan istemcilerde not düzenlemesi bu
+ * alanları değiştirmediği için belirsizlik kalmaz.
+ */
+function fieldTimeMs(candidates: Array<string | undefined>): number {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    const ms = Date.parse(candidate);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return NaN;
+}
+
+function resolveStatusTimeMs(item: SavedItem): number {
+  return fieldTimeMs([
+    item.status_changed_at,
+    item.updatedAt,
+    item.completedAt,
+    item.watchedAt,
+    item.addedAt,
+  ]);
+}
+
+function resolveRatingTimeMs(item: SavedItem): number {
+  const hasRating =
+    item.personal_rating !== '' && item.personal_rating != null && Number(item.personal_rating) > 0;
+  return fieldTimeMs([
+    item.rating_changed_at,
+    item.personal_rating_cleared ? item.updatedAt : undefined,
+    hasRating ? item.ratedAt : undefined,
+    item.updatedAt,
+    item.completedAt,
+    item.watchedAt,
+    item.addedAt,
+  ]);
+}
+
+function ratingOnly(item: SavedItem): string {
+  return item.personal_rating !== '' && item.personal_rating != null
+    ? String(item.personal_rating)
+    : '';
+}
+
 export function mergeTwoSavedItemsLossless(
   profileId: string,
   localItem: SavedItem,
@@ -85,8 +139,8 @@ export function mergeTwoSavedItemsLossless(
   changedRemote: boolean;
 } {
   const key = makeMediaKey(localItem);
-  // Durum/puan çakışmasında "daha yeni" belirleyicisi gerçek etkileşim
-  // tarihidir; not/metadata düzenlemesi (`updatedAt`) yalnızca son çaredir.
+  // Kaydın genel "son etkileşim" zamanı yalnızca alanların kendi zamanı
+  // olmadığında (ör. metadata seçimi) kullanılır.
   const localTime =
     localItem.ratedAt ||
     localItem.completedAt ||
@@ -102,15 +156,14 @@ export function mergeTwoSavedItemsLossless(
     remoteItem.updatedAt ||
     '';
 
+  const localStatusMs = resolveStatusTimeMs(localItem);
+  const remoteStatusMs = resolveStatusTimeMs(remoteItem);
+  const localRatingMs = resolveRatingTimeMs(localItem);
+  const remoteRatingMs = resolveRatingTimeMs(remoteItem);
+
   const statusDiffers = localItem.status !== remoteItem.status;
-  const localRatingStr =
-    localItem.personal_rating !== '' && localItem.personal_rating != null
-      ? String(localItem.personal_rating)
-      : '';
-  const remoteRatingStr =
-    remoteItem.personal_rating !== '' && remoteItem.personal_rating != null
-      ? String(remoteItem.personal_rating)
-      : '';
+  const localRatingStr = ratingOnly(localItem);
+  const remoteRatingStr = ratingOnly(remoteItem);
   const bothHaveDifferentRatings =
     Boolean(localRatingStr) && Boolean(remoteRatingStr) && localRatingStr !== remoteRatingStr;
 
@@ -118,15 +171,17 @@ export function mergeTwoSavedItemsLossless(
   let resolutionNote = '';
 
   if (statusDiffers) {
-    if (remoteTime && localTime && remoteTime !== localTime) {
-      if (remoteTime > localTime) {
+    if (Number.isFinite(localStatusMs) && Number.isFinite(remoteStatusMs) && localStatusMs !== remoteStatusMs) {
+      if (remoteStatusMs > localStatusMs) {
         chosenStatus = remoteItem.status;
-        resolutionNote = `Daha güncel zaman damgalı uzak durum (${remoteItem.status}) seçildi`;
+        resolutionNote = `Daha güncel alan damgalı uzak durum (${remoteItem.status}) seçildi`;
       } else {
         chosenStatus = localItem.status;
-        resolutionNote = `Daha güncel zaman damgalı yerel durum (${localItem.status}) korundu`;
+        resolutionNote = `Daha güncel alan damgalı yerel durum (${localItem.status}) korundu`;
       }
     } else {
+      // Eşit veya eksik damga: deterministik ve simetrik kural — izleme
+      // ilerlemesi daha ileri olan durum korunur (tamamlanma kaybolmaz).
       chosenStatus =
         statusProgressionRank(remoteItem.status) > statusProgressionRank(localItem.status)
           ? remoteItem.status
@@ -138,33 +193,64 @@ export function mergeTwoSavedItemsLossless(
   let chosenRating: number | '' = localItem.personal_rating;
   let chosenRatingCleared = Boolean(localItem.personal_rating_cleared);
 
+  // Boş puan her zaman "puanı sildim" demek değildir: yalnızca açık
+  // `personal_rating_cleared` işaretçisi olan taraf puan hakkında görüş bildirir.
+  const localRatingOpinion = Boolean(localRatingStr) || Boolean(localItem.personal_rating_cleared);
+  const remoteRatingOpinion = Boolean(remoteRatingStr) || Boolean(remoteItem.personal_rating_cleared);
+
   if (localRatingStr !== remoteRatingStr) {
-    if (localRatingStr && !remoteRatingStr) {
-      if (remoteItem.personal_rating_cleared && remoteTime > localTime) {
-        chosenRating = '';
-        chosenRatingCleared = true;
-      } else {
-        chosenRating = localItem.personal_rating;
-        chosenRatingCleared = false;
-      }
-    } else if (remoteRatingStr && !localRatingStr) {
-      if (localItem.personal_rating_cleared && localTime > remoteTime) {
-        chosenRating = '';
-        chosenRatingCleared = true;
-      } else {
-        chosenRating = remoteItem.personal_rating;
-        chosenRatingCleared = false;
-      }
-    } else if (bothHaveDifferentRatings) {
-      if (remoteTime > localTime) {
-        chosenRating = remoteItem.personal_rating;
-      } else {
-        chosenRating = localItem.personal_rating;
-      }
+    const localWinsByTime =
+      localRatingOpinion &&
+      remoteRatingOpinion &&
+      Number.isFinite(localRatingMs) &&
+      Number.isFinite(remoteRatingMs) &&
+      localRatingMs !== remoteRatingMs &&
+      localRatingMs > remoteRatingMs;
+    const remoteWinsByTime =
+      localRatingOpinion &&
+      remoteRatingOpinion &&
+      Number.isFinite(localRatingMs) &&
+      Number.isFinite(remoteRatingMs) &&
+      localRatingMs !== remoteRatingMs &&
+      remoteRatingMs > localRatingMs;
+
+    if (!remoteRatingOpinion) {
+      // Diğer tarafta puan hiç verilmemiş: mevcut görüşü koru.
+      chosenRating = localRatingStr ? localItem.personal_rating : '';
+      chosenRatingCleared = !localRatingStr && Boolean(localItem.personal_rating_cleared);
+    } else if (!localRatingOpinion) {
+      chosenRating = remoteRatingStr ? remoteItem.personal_rating : '';
+      chosenRatingCleared = !remoteRatingStr && Boolean(remoteItem.personal_rating_cleared);
+    } else if (localWinsByTime) {
+      chosenRating = localRatingStr ? localItem.personal_rating : '';
+      chosenRatingCleared = !localRatingStr && Boolean(localItem.personal_rating_cleared);
+      resolutionNote = resolutionNote
+        ? `${resolutionNote}; puan alanının güncel değeri (${localRatingStr || 'temizlendi'}) seçildi`
+        : `Puan alanının güncel değeri (${localRatingStr || 'temizlendi'}) seçildi`;
+    } else if (remoteWinsByTime) {
+      chosenRating = remoteRatingStr ? remoteItem.personal_rating : '';
+      chosenRatingCleared = !remoteRatingStr && Boolean(remoteItem.personal_rating_cleared);
+      resolutionNote = resolutionNote
+        ? `${resolutionNote}; puan alanının güncel değeri (${remoteRatingStr || 'temizlendi'}) seçildi`
+        : `Puan alanının güncel değeri (${remoteRatingStr || 'temizlendi'}) seçildi`;
+    } else if (localRatingStr && remoteRatingStr) {
+      // Eşit damga + iki farklı dolu puan: simetrik ve veri kaybını en aza
+      // indiren kural — büyük puan korunur (A+B ve B+A aynı sonucu verir).
+      const localValue = Number(localItem.personal_rating);
+      const remoteValue = Number(remoteItem.personal_rating);
+      chosenRating = remoteValue > localValue ? remoteItem.personal_rating : localItem.personal_rating;
       chosenRatingCleared = false;
       resolutionNote = resolutionNote
-        ? `${resolutionNote}; puan olarak güncel kayıt (${chosenRating}) seçildi`
-        : `Farklı kişisel puanlar arasından güncel olan (${chosenRating}) seçildi`;
+        ? `${resolutionNote}; eşit damgada daha yüksek puan (${chosenRating}) korundu`
+        : `Eşit damgada daha yüksek puan (${chosenRating}) korundu`;
+    } else {
+      // Eşit/eksik damgada biri dolu biri temiz: puanı sessizce düşürmemek için
+      // dolu puan korunur.
+      chosenRating = localRatingStr ? localItem.personal_rating : remoteItem.personal_rating;
+      chosenRatingCleared = false;
+      resolutionNote = resolutionNote
+        ? `${resolutionNote}; eşit damgada dolu puan (${chosenRating}) korundu`
+        : `Eşit damgada dolu puan (${chosenRating}) korundu`;
     }
   }
 
@@ -194,7 +280,20 @@ export function mergeTwoSavedItemsLossless(
     localItem.addedAt,
     remoteItem.addedAt,
   ]);
-  const latestUpdated = pickLatestIso([localTime, remoteTime]);
+  const latestUpdated = pickLatestIso([
+    localTime,
+    remoteTime,
+    localItem.updatedAt,
+    remoteItem.updatedAt,
+  ]);
+  const resolvedStatusChangedAt = pickLatestIso([
+    localItem.status_changed_at,
+    remoteItem.status_changed_at,
+  ]);
+  const resolvedRatingChangedAt = pickLatestIso([
+    localItem.rating_changed_at,
+    remoteItem.rating_changed_at,
+  ]);
 
   const resolvedRatedAt =
     chosenRating !== '' && chosenRating != null
@@ -273,6 +372,8 @@ export function mergeTwoSavedItemsLossless(
     status: chosenStatus,
     personal_rating: chosenRating,
     personal_rating_cleared: chosenRatingCleared,
+    ...(resolvedStatusChangedAt ? { status_changed_at: resolvedStatusChangedAt } : {}),
+    ...(resolvedRatingChangedAt ? { rating_changed_at: resolvedRatingChangedAt } : {}),
     ...(Object.keys(mergedSeasonProgress).length > 0
       ? { season_progress: mergedSeasonProgress }
       : {}),
@@ -318,6 +419,8 @@ export function mergeTwoSavedItemsLossless(
       status: it.status,
       rating: it.personal_rating === '' ? '' : Number(it.personal_rating),
       cleared: Boolean(it.personal_rating_cleared),
+      statusChangedAt: it.status_changed_at || '',
+      ratingChangedAt: it.rating_changed_at || '',
       ratedAt: it.ratedAt || '',
       completedAt: it.completedAt || '',
       watchedAt: it.watchedAt || '',
@@ -747,6 +850,8 @@ function buildComparableUserDataSnapshot(doc: DataDocument | null | undefined) {
           status: it.status,
           personal_rating: it.personal_rating === '' ? '' : Number(it.personal_rating),
           personal_rating_cleared: Boolean(it.personal_rating_cleared),
+          status_changed_at: it.status_changed_at || '',
+          rating_changed_at: it.rating_changed_at || '',
           season_progress: it.season_progress || {},
           watched_episodes: it.watched_episodes || {},
           progress_updated_at: it.progress_updated_at || {},

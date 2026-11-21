@@ -131,6 +131,8 @@ export function stripUserDataVolatileFields(doc: DataDocument): Record<string, a
             status: it.status,
             personal_rating: it.personal_rating === '' ? '' : Number(it.personal_rating),
             personal_rating_cleared: Boolean(it.personal_rating_cleared),
+            status_changed_at: it.status_changed_at || '',
+            rating_changed_at: it.rating_changed_at || '',
             season_progress: it.season_progress || {},
             season_episode_counts: it.season_episode_counts || {},
             genre_ids: [...(it.genre_ids || [])].sort((a, b) => a - b),
